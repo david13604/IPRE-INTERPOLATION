@@ -1,14 +1,17 @@
 import tensorflow as tf
-from keras import layers, Model, backend
+import keras
+from keras import layers, Model, ops
 import numpy as np
 from keras.src.optimizers import Adam
 from keras.src.losses import MeanSquaredError
 import os
 import pickle
+import numpy as np
 print(tf.__version__)
 #lo hago con red convolucional
 
-class Autoencoder:
+
+class VAE:
 
     def __init__(self,
                  input_shape,
@@ -28,6 +31,7 @@ class Autoencoder:
         self.conv_kernells = conv_kernells #[3, 5, 3]
         self.conv_strides = conv_strides #[1, 2, 2]
         self.latent_space_dim = latent_space_dimm #2
+        self.reconstruction_loss_weight = 1000 #por que????
 
         self.encoder = None
         self.decoder = None
@@ -45,10 +49,14 @@ class Autoencoder:
         self.model.summary()
 
     #entrenamiento
+
+    @tf.function
     def compile(self, learning_rate = 0.0001):
         optimizer = Adam(learning_rate= learning_rate)
-        mean_sq_err = MeanSquaredError()
-        self.model.compile(optimizer= optimizer, loss= mean_sq_err)
+        #mean_sq_err = MeanSquaredError()
+        #self.model.compile(optimizer= optimizer, loss= mean_sq_err)
+        self.model.compile(optimizer= optimizer, 
+                           loss= self.get_loss(self.mu, self.log_variance))
 
     def tranin(self, x_train, batch_size, num_epochs):
         self.model.fit(x_train, 
@@ -79,14 +87,38 @@ class Autoencoder:
         parameters_path = os.path.join(save_folder, "parameters.pkl") #el que guarde antes
         with open (parameters_path, "rb") as f:
             parameters = pickle.load(f) #investigar
-        autoencoder = Autoencoder(*parameters)
+        autoencoder = VAE(*parameters)
         
         weights_path = os.path.join(save_folder, ".weights.h5")
         autoencoder.load_weights(weights_path) #interno de keras vamos a ver si funciona
 
         return autoencoder
 
+    def get_loss(self, mu, log_variance):
+        def _calculate_combined_loss(y_target, y_predicted):
+            reconstruction_loss = _calculate_resconstruction_loss(y_target, y_predicted)
+            Kl_loss = _calculate_Kl_loss(mu, log_variance)
 
+            combined_loss = self.reconstruction_loss_weight*reconstruction_loss + Kl_loss
+            return combined_loss
+
+        def _calculate_resconstruction_loss(y_target, y_predicted):
+            error = y_target - y_predicted
+
+            reconstruction_loss = tf.reduce_mean(tf.square(error), axis= [1,2,3]) #basicamente el mean ^2 error
+            #axis es para calcular el promedio solo de las dimensiones pedidas(batch_size, height, width, channels)
+            # dejaria sin promediar channels en este ejemplo. 
+            return reconstruction_loss
+
+        def _calculate_Kl_loss(mu, log_variance):
+            #la formula la tengo en a tablet
+            kl_loss = -0.5*tf.reduce_sum(1+ log_variance - tf.square(mu) - 
+                                         tf.exp(log_variance), axis = 1)
+
+            return kl_loss
+        
+        return _calculate_combined_loss
+    
     def _crear_nuevo_sino_existe(self, folder):
         if not os.path.exists(folder):
             os.makedirs(folder)
@@ -217,13 +249,31 @@ class Autoencoder:
     
     def _add_bottleneck(self, x):
         ''' Flatten data and add blottleneck (Dense layer)'''
+        """ahora con variational se van a tener dos dense layer
+         una para la media otra para la varianza """
         self._shape_before_bottleneck = x.shape[1:]
         x = layers.Flatten()(x)
-        x = layers.Dense(self.latent_space_dim, name = "encoder_output")(x)
+
+        self.mu = layers.Dense(self.latent_space_dim, name = "mu")(x)
+        self.log_variance = layers.Dense(self.latent_space_dim, name = "log_variance")(x)
+        
+        #lambda function de keras
+        def sample_poion_from_normal_distribution(args):
+            mu, log_variance = args
+            
+            batch_size = tf.shape(log_variance)[0]
+            epsilon = keras.random.normal(shape = (batch_size, tf.shape(log_variance)[1]),
+                                           mean = 0., stddev = 1.) 
+            #epsilon es un punto muestreado de la distribucion normal, shape es para que tenga el
+            #mismo largo que el tensor mu
+            sampled_point = mu + tf.exp(0.5*log_variance)*epsilon #ahora este es un sampled point de z = mu + sigma
+            return sampled_point
+        x = layers.Lambda(sample_poion_from_normal_distribution, 
+                          name = "encoder_output", output_shape= (self.latent_space_dim,))([self.mu, self.log_variance])
         return x
     
 if __name__ == "__main__":
-    autoencoder = Autoencoder(
+    autoencoder = VAE(
         input_shape= (28,28,1),
         conv_filters= (32, 64, 64, 64),
         conv_kernells= (3, 3, 3, 3),
