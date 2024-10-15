@@ -8,7 +8,7 @@ import os
 import pickle
 import numpy as np
 print(tf.__version__)
-#lo hago con red convolucional
+#lo hago con red convolucional 
 
 
 class VAE:
